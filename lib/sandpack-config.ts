@@ -55,7 +55,7 @@ export default function App() {
   }
 
   return {
-    template: "react-ts" as const,
+    template: "vite-react-ts" as const,
     files: sandpackFiles,
     options: {
       externalResources: [
