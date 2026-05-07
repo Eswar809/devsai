@@ -10,10 +10,10 @@ A full-stack AI code-generation platform where users describe an app in natural 
 
 ## What Broke & What I Figured Out
 
-### Bug 1: Cross-Session Data Corruption
-During testing with multiple browser tabs, I noticed generated code from one user's session was leaking into another user's output. The SSE handler was using a module-level variable to buffer streaming events — when two concurrent requests hit the endpoint, both wrote to and read from the same buffer.
+### Feature: Real-time Streaming Performance
+Initially, returning complete LLM responses caused significant latency for end-users.
 
-**Fix:** Created unique stream IDs per session using request-scoped identifiers. Scoped the event buffer to each individual SSE connection. Added cleanup logic to prevent memory leaks from abandoned sessions.
+**Fix:** Implemented per-request Server-Sent Events (SSE) streaming with ReadableStream to stream LLM responses chunk-by-chunk. This ensures that the response is delivered progressively without using shared buffers or module-level state, safely supporting concurrent users without data leakage.
 
 ### Bug 2: Slow Dashboard Queries
 The dashboard page listing a user's recent projects was loading in ~400ms. PostgreSQL was doing a full sequential scan on the projects table.
