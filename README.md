@@ -1,75 +1,78 @@
 # DevsAI — Autonomous AI Code-Generation Platform
 
-> 🚀 **Live Demo:** [https://devsai.vercel.app](https://devsai.vercel.app) *(deployment pending — update this URL after deploying)*
+A full-stack Next.js app that turns a natural-language prompt into a multi-file React project, streamed back to the user in real time and rendered live inside a Sandpack iframe.
 
-## What I Built
+> **Status:** local development working. Production deployment runbook is in [`deployment.md`](./deployment.md) — replace this line with a live URL once deployed.
 
-A full-stack AI code-generation platform where users describe an app in natural language and receive multi-file React projects generated autonomously. Built with **Next.js**, **TypeScript**, and **PostgreSQL** via **Prisma ORM**, with real-time output delivered via **Server-Sent Events (SSE)** streaming.
+**Stack:** Next.js 16 · TypeScript · PostgreSQL (Prisma + Neon serverless adapter) · Gemini + Mistral via SSE streaming · Tailwind · Vercel
 
-**Tech Stack:** Next.js 15 · TypeScript · PostgreSQL (Prisma) · Gemini API · Tailwind CSS · SSE Streaming
+## What I built
 
-## What Broke & What I Figured Out
+- A multi-step code-generation flow that prompts an LLM (Gemini 2.5 or Mistral), parses the streamed response, and renders the running app in a Sandpack iframe (`lib/sandpack-config.ts`, `lib/stream-parser.ts`).
+- Server-Sent Events streaming via a Next.js Route Handler (`app/api/get-next-completion-stream-promise/route.ts`) using `ReadableStream` — each request gets its own controller in a closure, so concurrent users don't share buffers or module-level state.
+- Prisma schema for `Chat` / `Message` / `GeneratedApp` with composite indexes for the dashboard query path (`prisma/schema.prisma`).
+- GitHub Actions CI on every push and PR — runs `next lint && tsc --noEmit --noUnusedLocals` (`.github/workflows/ci.yml`).
 
-### Feature: Real-time Streaming Performance
-Initially, returning complete LLM responses caused significant latency for end-users.
+## What broke & what I figured out
 
-**Fix:** Implemented per-request Server-Sent Events (SSE) streaming with ReadableStream to stream LLM responses chunk-by-chunk. This ensures that the response is delivered progressively without using shared buffers or module-level state, safely supporting concurrent users without data leakage.
+### 1. Slow dashboard queries
+Listing the messages of an open chat was taking ~400 ms — PostgreSQL was doing a `Seq Scan` and sorting in memory.
 
-### Bug 2: Slow Dashboard Queries
-The dashboard page listing a user's recent projects was loading in ~400ms. PostgreSQL was doing a full sequential scan on the projects table.
+**Fix:** Added `@@index([chatId, createdAt])` on `Message`. The query plan switched to `Index Scan` and the fetch dropped by ~25 % (Chrome DevTools → Network, before vs after on the same dataset). The reasoning, the actual `EXPLAIN ANALYZE` query, and an honesty note about the measurement live in [`prisma/optimization.md`](./prisma/optimization.md).
 
-**Fix:** Added a composite index on `(user_id, created_at)`. Query plan changed from `Seq Scan` → `Index Scan`, reducing latency by ~25% (measured via browser DevTools).
+### 2. Schema accidentally deleted by a "perf" commit
+While adding the index above (commit `b85d4f5`), the `Chat` / `Message` / `GeneratedApp` block got dropped from `prisma/schema.prisma`. `npx prisma validate` failed; the app stopped booting.
+
+**Fix:** Recovered the previous-revision schema from the parent commit, validated, and re-committed:
+
+```bash
+git show b85d4f5^:prisma/schema.prisma > prisma/schema.prisma
+npx prisma validate
+git add prisma/schema.prisma
+git commit -m "fix: restore prisma schema (Chat/Message/GeneratedApp) accidentally removed in b85d4f5"
+```
+
+Recovery commit is `34b9565`. The full rollback playbook (including how to handle migrations that already ran in production) is in [`deployment.md`](./deployment.md).
+
+### 3. Real-time streaming without cross-session leaks
+SSE responses are constructed inside the route handler with a `ReadableStream` whose controller lives in a per-request closure — there is no module-scope buffer, so two simultaneous prompts can't bleed into each other's responses. The handler also gracefully closes the controller on errors so the client EventSource gets a clean shutdown.
 
 ## Architecture
 
 ```
-[Client (Next.js/React)] <---(SSE)---> [API Routes (Next.js)] <---> [PostgreSQL (Prisma)]
-                                              |
-                                        [Gemini AI API]
+[Client (Next.js / React)]  <-- SSE -->  [Next.js Route Handlers]  <-- Prisma + Neon -->  [PostgreSQL]
+                                                |
+                                                +-- Gemini API
+                                                +-- Mistral API
 ```
 
-## Setup
+## Run locally
 
-1. Clone the repo
 ```bash
 git clone https://github.com/Eswar809/devsai.git
 cd devsai
-```
-
-2. Install dependencies
-```bash
 pnpm install
-```
-
-3. Set up environment variables
-```bash
-cp .env.example .env
-# Add your database URL and API keys to .env
-```
-
-4. Set up the database
-```bash
-npx prisma db push
-```
-
-5. Run the development server
-```bash
+cp .env.example .env       # fill in DATABASE_URL + GEMINI_API_KEY (MISTRAL_API_KEY is optional)
+npx prisma migrate dev
 pnpm dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) to view it.
+Open [http://localhost:3000](http://localhost:3000).
 
-## Project Structure
+## Deploy
+
+See [`deployment.md`](./deployment.md) — covers Vercel + Neon setup, environment-variable wiring, automatic `prisma migrate deploy` during build, and a step-by-step rollback path for both code-only and code + schema rollbacks.
+
+## Project structure
 
 ```
 devsai/
-├── app/              # Next.js app router pages & API routes
-├── components/       # React components (ErrorBoundary, UI)
-├── hooks/            # Custom React hooks
-├── lib/              # Utilities (stream isolation, helpers)
-├── prisma/           # Database schema & migrations
-├── public/           # Static assets
-└── .github/workflows # CI pipeline (lint + type-check)
+├── app/                # Next.js app-router pages + API routes (SSE streaming, S3 upload, OG image)
+├── components/         # React components (UI, error boundary)
+├── hooks/              # Custom React hooks
+├── lib/                # Prisma client, prompt templates, sandpack config, stream parser
+├── prisma/             # schema.prisma, migrations/, optimization.md
+└── .github/workflows/  # CI: lint + type-check
 ```
 
 ## Author
