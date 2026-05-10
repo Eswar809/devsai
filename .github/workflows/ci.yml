@@ -1,5 +1,9 @@
 name: CI
-on: [push, pull_request]
+on:
+  workflow_dispatch:
+  # auto-triggers disabled due to billing lock; re-enable when resolved
+  # push:
+  # pull_request:
 jobs:
   test:
     runs-on: ubuntu-latest
